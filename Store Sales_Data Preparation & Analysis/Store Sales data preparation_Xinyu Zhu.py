@@ -4,11 +4,11 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
-traind = pd.read_csv('C:/Users/angel/Desktop/realds/train_market.csv', parse_dates=['date'])
-testd = pd.read_csv('C:/Users/angel/Desktop/realds/test_market.csv', parse_dates=['date'])
-oild = pd.read_csv('C:/Users/angel/Desktop/realds/oil.csv', parse_dates=['date'])
-stored = pd.read_csv('C:/Users/angel/Desktop/realds/stores.csv')
-holidayd = pd.read_csv('C:/Users/angel/Desktop/realds/holidays_events.csv', parse_dates=['date'])
+traind = pd.read_csv('C:/Users/angel/Desktop/realds/Store Sales Raw Data/train.csv', parse_dates=['date'])
+testd = pd.read_csv('C:/Users/angel/Desktop/realds/Store Sales Raw Data/test.csv', parse_dates=['date'])
+oild = pd.read_csv('C:/Users/angel/Desktop/realds/Store Sales Raw Data/oil.csv', parse_dates=['date'])
+stored = pd.read_csv('C:/Users/angel/Desktop/realds/Store Sales Raw Data/stores.csv')
+holidayd = pd.read_csv('C:/Users/angel/Desktop/realds/Store Sales Raw Data/holidays_events.csv', parse_dates=['date'])
 
 
 from sklearn.preprocessing import OneHotEncoder
@@ -17,12 +17,21 @@ import numpy as np
 def prepare_oil_data(oild, maind):
     start_D = min(maind['date'].min(), oild['date'].min())
     end_D = max(maind['date'].max(), oild['date'].max())
-    drange = pd.date_range(start_D, end_D, freq = 'D')
+    drange = pd.date_range(start_D, end_D, freq='D')
     full_dates_oild = pd.DataFrame({'date': drange})
-    oild_fin = pd.merge(full_dates_oild, oild, on = 'date', how = 'left')
+    oild_fin = pd.merge(full_dates_oild, oild, on='date', how='left')
     oild_fin['dcoilwtico'] = oild_fin['dcoilwtico'].ffill().bfill()
     
-    maind = pd.merge(maind, oild_fin[['date', 'dcoilwtico']], on = 'date', how = 'left')
+    # add inverse of oil price, which can be positively related to store sales
+    oild_fin['inv_oil'] = 1 / oild_fin['dcoilwtico']
+    
+    # add rate of change in oil price, as oil price is shown to be a large determinant in sales
+    oild_fin['oil_change'] = oild_fin['dcoilwtico'].pct_change()
+    oild_fin['oil_change'] = oild_fin['oil_change'].fillna(0)
+    
+    maind = pd.merge(maind, oild_fin[['date', 'dcoilwtico', 'inv_oil', 'oil_change']], 
+                     on='date', how='left')
+    
     return maind
 
 testd = prepare_oil_data(oild, testd)
@@ -35,20 +44,59 @@ def prepare_stores(stored, maind):
 traind = prepare_stores(stored, traind)
 testd = prepare_stores(stored, testd)
 
-def encode_categories(df):
-    state_dummies = pd.get_dummies(df['state'], prefix='state').astype(int)
-    type_dummies = pd.get_dummies(df['type'], prefix='type').astype(int)
-    city_dummies = pd.get_dummies(df['city'], prefix = 'city').astype(int)
-    cluster_dum = pd.get_dummies(df['cluster'], prefix = 'cluster').astype(int)
-    family_dummies = pd.get_dummies(df['family'], prefix = 'family').astype(int)
-    df = pd.concat([df, state_dummies, type_dummies, city_dummies, cluster_dum], axis=1)
-    df = df.drop(['state', 'type','city', 'cluster','family'], axis = 1)
+#grouping stores according to mean sales, enlarging the effect of store sales experience
+def create_store_bands(train, test, n_bands=6):
+
+    store_avg_sales = train.groupby('store_nbr')['sales'].mean()
+    
+    store_bands = pd.qcut(store_avg_sales, q=n_bands, labels=range(1, n_bands+1))
+    store_band_dict = store_bands.to_dict()
+    
+    train['store_band'] = train['store_nbr'].map(store_band_dict)
+    test['store_band'] = test['store_nbr'].map(store_band_dict)
+    
+    band_stats = train.groupby('store_band')['sales'].agg(['mean', 'std', 'median']).round(2)
+    band_stats.columns = [f'band_{col}' for col in band_stats.columns]
+    band_stats = band_stats.reset_index()
+    
+    train = pd.merge(train, band_stats, on='store_band', how='left')
+    test = pd.merge(test, band_stats, on='store_band', how='left')
+    
+    for col in ['band_mean', 'band_std', 'band_median']:
+        if col in test.columns:
+            global_mean = train['sales'].mean()
+            test[col] = test[col].fillna(global_mean)
+    
+    return train, test
+
+traind, testd = create_store_bands(traind, testd, n_bands=6)
+
+def encode_categories(df, use_store_band=True):
+    df = df.copy()
+
+    # creating label encoding for the family category
+    if 'family' in df.columns:
+        fam_map = {family: i for i, family in enumerate(df['family'].unique())}
+        df['family'] = df['family'].map(fam_map).astype('int8')
+    
+    # one-hot coding for store types: decrease possible linear relationship.
+    if 'type' in df.columns:
+        type_dummies = pd.get_dummies(df['type'], prefix='type', dtype='int8')
+        df = pd.concat([df, type_dummies], axis=1)
+        df = df.drop(['type'], axis=1)
+    
+    # deal with store type outliers: rare types to be considered together
+    if 'type' not in df.columns:
+        for col in ['type_A', 'type_B', 'type_C', 'type_D', 'type_E']:
+            if col not in df.columns:
+                df[col] = 0
+    
     return df
 
 traind = encode_categories(traind)
 testd = encode_categories(testd)
 
-def add_dates(holidayd):
+def add_holidates(holidayd):
     transfers = holidayd[holidayd['transferred'] == True]
     transfertos = holidayd[holidayd['type'] == 'Transfer']
     holidayd['is_actual_holi'] = False
@@ -83,53 +131,58 @@ def add_dates(holidayd):
     holidayd['is_localholi'] = (holidayd['locale'] == 'Local').astype(int)
     return holidayd
 
-holidayd = add_dates(holidayd)
+holidayd = add_holidates(holidayd)
+
+#Based on Kaggle discussions, some stores seem to be outliers, distracting the sales pattern for model training.
+def remove_outlier_stores(df, outlier_stores=None):
+
+    outlier_stores = [45, 44, 1, 2, 3, 4, 5, 9, 7, 12, 20]
+    
+    return df[~df['store_nbr'].isin(outlier_stores)].copy()
+
+traind = remove_outlier_stores(traind)
+
 
 def mergeall(holidayd, df, stored):
-    df =  pd.merge(df, stored[['store_nbr', 'city', 'state']], on = 'store_nbr', how = 'left')
-    real_holidays = holidayd[holidayd['is_actual_holi'] == True]
-    national_holi = real_holidays[real_holidays['is_nationholi'] == 1]
-    national_features = national_holi[['date'] +
-        [col for col in national_holi.columns if col.startswith('holiday_') or col.startswith('is_')]]
-    national_features = national_features.drop_duplicates('date')
-    national_features = national_features.add_prefix('national_')
-    national_features = national_features.rename(columns={'national_date': 'date'})
-    df = pd.merge(df, national_features, on='date', how='left')
     
-    regional_holi = real_holidays[real_holidays['is_regionholi'] ==1]
-    regional_features = regional_holi[['date', 'locale_name']+
-        [col for col in regional_holi.columns if col.startswith('holiday_')]]  
-    regional_features = regional_features.add_prefix('regional_')
-    regional_features = regional_features.rename(columns = {'regional_date': 'date', 'regional_locale_name': 'state'})
-    df = pd.merge(df, regional_features, on = ['date', 'state'], how = 'left')
+    if 'state' not in df.columns or 'city' not in df.columns:
+        store_info = stored[['store_nbr', 'city', 'state']].drop_duplicates()
+        df = pd.merge(df, store_info, on='store_nbr', how='left', suffixes=('', '_store'))
     
-    local_holi = real_holidays[real_holidays['is_localholi'] == 1]
-    local_features = local_holi[['date', 'locale_name'] + 
-        [col for col in local_holi.columns if col.startswith('holiday_')]]
-    local_features = local_features.add_prefix('local_')
-    local_features = local_features.rename(columns={
-        'local_date': 'date', 
-        'local_locale_name': 'city'
-    })
-    df = pd.merge(df, local_features, on=['date', 'city'], how='left')
+    # acquire real holidays
+    real_holidays = holidayd[holidayd['is_actual_holi'] == True].copy()
     
-    holiday_cols = [col for col in df.columns if 'holiday' in col or 'is_' in col]
-    for col in holiday_cols:
-        if col not in ['date', 'city', 'state']:
-            # 尝试转换为数值，无法转换的变为NaN，然后填充0
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-            # 如果该列所有值都是整数，转换为int8以节省内存
-            if (df[col] % 1 == 0).all():
-                df[col] = df[col].astype('int8')
+    #adjust for different types of holidays
+    national_data = real_holidays[real_holidays['is_nationholi'] == 1]['date'].unique()
+    df['is_national_holiday'] = df['date'].isin(national_data).astype('int8')
     
-    holiday_type_cols = [col for col in df.columns if 'holiday_type_' in col]
-    df['is_holiday'] = df[holiday_type_cols].sum(axis=1) >0
+    regional_data = real_holidays[real_holidays['is_regionholi'] == 1][['date', 'locale_name']].copy()
+    regional_data = regional_data.rename(columns={'locale_name': 'state'})
+    
+    regional_data['is_regional_holiday'] = 1
+    regional_data = regional_data.drop_duplicates(['date', 'state'])
+    
+    df = pd.merge(df, regional_data, on=['date', 'state'], how='left')
+    df['is_regional_holiday'] = df['is_regional_holiday'].fillna(0).astype('int8')
+    
+    local_data = real_holidays[real_holidays['is_localholi'] == 1][['date', 'locale_name']].copy()
+    local_data = local_data.rename(columns={'locale_name': 'city'})
+    
+    local_data['is_local_holiday'] = 1
+    local_data = local_data.drop_duplicates(['date', 'city'])
+    
+    df = pd.merge(df, local_data, on=['date', 'city'], how='left')
+    df['is_local_holiday'] = df['is_local_holiday'].fillna(0).astype('int8')
+    
+    df['is_holiday'] = ((df['is_national_holiday'] == 1) | 
+                        (df['is_regional_holiday'] == 1) | 
+                        (df['is_local_holiday'] == 1)).astype('int8')
     
     return df
-
+                  
 traind = mergeall(holidayd, traind, stored)
 testd = mergeall(holidayd, testd, stored)
-                                          
+                        
 def createpayday(df):
     df['is_payday'] = ((df['date'].dt.day==15) | (df['date'].dt.is_month_end)).astype(int)
     return df
@@ -137,6 +190,7 @@ def createpayday(df):
 traind = createpayday(traind)
 testd = createpayday(testd)
 
+# remove earthquake affected data from the dataset
 def remove_earthquake_by_date(df, earthquake_date='2016-04-16', weeks=4):
     
     earthquake_date = pd.Timestamp(earthquake_date)
@@ -151,33 +205,42 @@ def remove_earthquake_by_date(df, earthquake_date='2016-04-16', weeks=4):
 
 traind = remove_earthquake_by_date(traind, '2016-04-16', weeks=4)
 
-def add_date_features_and_drop(df):
+# adding date data, including the day, month, season, year, is or not weekend, and whether it is the start or end of a year, month.
+def add_dates(df):
 
     df = df.copy()
     
-    # 添加日期特征
+    # adjust date labels
     df['year'] = df['date'].dt.year.astype('int16')
     df['month'] = df['date'].dt.month.astype('int8')
     df['day'] = df['date'].dt.day.astype('int8')
     df['dayofweek'] = df['date'].dt.dayofweek.astype('int8')
+    df['is_weekend'] = (df['dayofweek'] >= 5).astype('int8')
     df['quarter'] = df['date'].dt.quarter.astype('int8')
     df['is_weekend'] = (df['dayofweek'] >= 5).astype('int8')
+    df['is_month_start'] = df['date'].dt.is_month_start.astype('int8')
+    df['is_month_end'] = df['date'].dt.is_month_end.astype('int8')
+    df['is_year_start'] = df['date'].dt.is_year_start.astype('int8')
+    df['is_year_end'] = df['date'].dt.is_year_end.astype('int8')
     
-    # 删除原始的日期列
+    df['season'] = pd.cut(df['month'], 
+                          bins=[0, 3, 6, 9, 12, 13],
+                          labels=[2, 3, 4, 1, 2],
+                          ordered=False).astype('int8')  # 1,2,3,4 for seasons spring to winter
+    
     if 'date' in df.columns:
         df = df.drop(columns=['date'])
     
     return df
 
-# 在删除city和state列后，添加日期特征并删除日期列
-traind = add_date_features_and_drop(traind)
-testd = add_date_features_and_drop(testd)
+traind = add_dates(traind)
+testd = add_dates(testd)
 
-traind = traind.drop(['city', 'state', 'national_holiday_type'], axis=1)
-testd = testd.drop(['city', 'state', 'national_holiday_type'], axis=1)
+traind = traind.drop(['city', 'state'], axis=1)
+testd = testd.drop(['city', 'state'], axis=1)
 
-
-def save_processed_data(traind, testd, output_dir='C:/Users/angel/Desktop/realds/processed/'):
+# saving data to an intermediate csv file
+def save_data(traind, testd, output_dir='C:/Users/angel/Desktop/realds/processed/'):
 
     import os
     os.makedirs(output_dir, exist_ok=True)
@@ -192,5 +255,5 @@ def save_processed_data(traind, testd, output_dir='C:/Users/angel/Desktop/realds
 
     return traind_file, testd_file
 
-save_processed_data(traind, testd)
+save_data(traind, testd)
 
