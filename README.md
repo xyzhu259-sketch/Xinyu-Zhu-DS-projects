@@ -14,30 +14,55 @@ Contest information:
 Project Structure:
   project/
   │
-  ├── data/                          # data file
-  │   ├── train.csv                  # 训练数据
-  │   ├── test.csv                   # 测试数据
-  │   ├── oil.csv                    # 油价数据
-  │   ├── stores.csv                 # 商店信息
-  │   └── holidays_events.csv        # 节假日数据
+  ├── Store Sales Raw Data/                          # raw data file
+  │   ├── train.csv                  # train data
+  │   ├── test.csv                   # test data
+  │   ├── oil.csv                    # oil price for different dates
+  │   ├── stores.csv                 # store information
+  │   └── holidays_events.csv        # holiday date information
+  │   └── transactions.csv        # transaction data
   │
-  ├── src/                           # 源代码目录
-  │   ├── preprocessing.py           # 数据预处理
-  │   ├── feature_engineering.py     # 特征工程
-  │   ├── modeling.py                # 模型训练
-  │   └── utils.py                   # 工具函数
+  ├── Store Sales_Data Preparation & Analysis/        # codes of data processing & analysis
+  │   ├── Store Sales data preparation_Xinyu Zhu.py        # data processing
+  │   ├── Store Sales_RFprediction_Xinyu Zhu.py          #model training
   │
-  ├── models/                        # 保存的模型
-  │   └── best_model.pkl
-  │
-  ├── submissions/                   # 提交文件
-  │   └── submission.csv
-  │
-  ├── notebooks/                     # Jupyter笔记本
-  │   ├── EDA.ipynb                  # 探索性数据分析
-  │   └── Modeling.ipynb             # 建模实验
+  ├── final_predictions.csv
   │
   ├── requirements.txt               # 依赖包列表
   ├── README.md                      # 项目说明
   └── main.py                        # 主程序入口
+
+Technology Stack:
+  Programming Language: Python
+  
+  Data Processing: Pandas, NumPy
+  
+  Machine Learning: Scikit-learn
+  
+  Environment Management: Anaconda, pip
+
+Data Preprocessing
+  Date Handling: Parse dates and extract features related to sales: weekends, paydays, starts & ends of year/season/month, etc.
+  
+  Missing Value Imputation: Forward and backward filling for oil prices
+  
+  Data Integration: Merge all external data sources
+  
+  Outlier Handling: Identify and remove data of particular outlier stores
+
+Feature Engineering
+Temporal Features: Year, month, day, week, quarter, weekend flag
+
+Lag Features: Lagged sales values (1 day ago, 7 days ago, etc.)
+
+Rolling Statistics: Moving averages, moving standard deviations
+
+Holiday Features: transferred holidays, create holiday features by type(national, regional, etc.)
+
+Store Features: Store type, city, state, cluster encoding
+
+Modeling
+Baseline Model: Random Forest Regressor
+
+Model Ensemble: Weighted averaging of multiple models
 
