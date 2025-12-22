@@ -29,6 +29,8 @@ Project Structure:
   ├── final_predictions.csv
   │
   ├── README.md                      # Project description
+  ├── .gitignore
+  └── LICENSE                    # MIT license
 
 Technology Stack:
   Programming Language: Python
